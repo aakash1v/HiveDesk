@@ -11,6 +11,17 @@ node_modules
 dist
 dist-ssr
 *.local
+*.env
+*.package-lock.json
+*.package.json.cjs
+*.yarn-integrity
+.pnp.*
+
+# Build directories
+build
+build-ssr
+
+
 
 # Editor directories and files
 .vscode/*
