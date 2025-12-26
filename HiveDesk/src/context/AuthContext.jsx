@@ -1,56 +1,53 @@
-import React, { createContext, useState, useContext, useEffect } from 'react';
-import { onAuthChange, logout } from '../services/auth';
-import { showError } from '../components/common/Toast';
+import React, { createContext, useContext, useEffect, useState } from 'react'
+import { onAuthStateChanged, signOut } from 'firebase/auth'
+import { auth } from '../services/firebaseConfig'
 
-const AuthContext = createContext({});
+const AuthContext = createContext()
 
-export const useAuth = () => useContext(AuthContext);
+export const useAuth = () => useContext(AuthContext)
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState(null)
+  const [loading, setLoading] = useState(true)
 
+  // 🔹 Listen to Firebase Auth state
   useEffect(() => {
-    const unsubscribe = onAuthChange((firebaseUser) => {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
       if (firebaseUser) {
-        // TODO: Fetch user data from backend
-        const userData = {
+        const role = firebaseUser.email?.includes('hr')
+          ? 'hr'
+          : 'employee'
+
+        setUser({
           uid: firebaseUser.uid,
           email: firebaseUser.email,
-          name: firebaseUser.displayName || firebaseUser.email?.split('@')[0],
-          role: 'employee', // TODO: Get from backend
-        };
-        setUser(userData);
+          role,
+        })
       } else {
-        setUser(null);
+        setUser(null)
       }
-      setLoading(false);
-    });
 
-    return unsubscribe;
-  }, []);
+      setLoading(false)
+    })
 
-  const signOut = async () => {
-    try {
-      await logout();
-      setUser(null);
-    } catch (error) {
-      showError('Logout failed');
-    }
-  };
+    return () => unsubscribe()
+  }, [])
+
+  // 🔹 Logout
+  const logout = async () => {
+    await signOut(auth)
+    setUser(null)
+  }
 
   const value = {
     user,
+    logout,
     loading,
-    isAuthenticated: !!user,
-    isHR: user?.role === 'hr',
-    isEmployee: user?.role === 'employee',
-    signOut,
-  };
+  }
 
   return (
     <AuthContext.Provider value={value}>
-      {children}
+      {!loading && children}
     </AuthContext.Provider>
-  );
-};
+  )
+}

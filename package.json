@@ -1,9 +1,0 @@
-{
-  "dependencies": {
-    "@mui/material": "^7.3.6",
-    "html-react-parser": "^5.2.11",
-    "react-hook-form": "^7.69.0",
-    "react-redux": "^9.2.0",
-    "react-router-dom": "^7.11.0"
-  }
-}
