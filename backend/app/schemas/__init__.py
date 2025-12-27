@@ -27,6 +27,19 @@ from .document import (
     DocumentResponseSchema,
     DocumentUploadResponseSchema
 )
+from .responses import (
+    DashboardHRResponseSchema,
+    DashboardEmployeeResponseSchema,
+    EmployeeListResponseSchema,
+    EmployeeManageResponseSchema,
+    TaskListResponseSchema,
+    HRTaskListResponseSchema,
+    DocumentListResponseSchema,
+    TrainingListResponseSchema,
+    HRTrainingListResponseSchema,
+    MessageResponseSchema,
+    AssignTaskResponseSchema
+)
 from .training import (
     TrainingModuleBaseSchema,
     TrainingModuleCreateSchema,

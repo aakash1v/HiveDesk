@@ -18,11 +18,6 @@ services:
       retries: 5
     networks:
       - hr_network
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
 
   # FastAPI Application
   backend:
@@ -41,18 +36,12 @@ services:
       - "8000:8000"
     volumes:
       - ./uploads:/app/uploads
-      - ./app:/app/app
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
     networks:
       - hr_network
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 512M
 
 networks:
   hr_network:

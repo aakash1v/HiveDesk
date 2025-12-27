@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse
 # from scalar_fastapi import get_scalar_api_reference
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlmodel import select, func
 from typing import Optional
 from datetime import datetime, timedelta
 import aiofiles
@@ -21,7 +21,13 @@ from .models import (
 )
 from .schemas import (
     UserCreateSchema, UserResponseSchema, UserLoginSchema, UserLoginResponseSchema,
-    DocumentUploadResponseSchema
+    DocumentUploadResponseSchema,
+    DashboardHRResponseSchema, DashboardEmployeeResponseSchema,
+    EmployeeListResponseSchema, EmployeeManageResponseSchema,
+    TaskListResponseSchema, HRTaskListResponseSchema,
+    DocumentListResponseSchema, TrainingListResponseSchema,
+    HRTrainingListResponseSchema, MessageResponseSchema,
+    AssignTaskResponseSchema
 )
 from .core.enums import UserRole, TaskStatus, VerificationStatus, DocumentType
 from .auth import (
@@ -240,10 +246,12 @@ async def get_dashboard(
         }
 
 
-@app.get("/{name}/{role}/employees", dependencies=[Depends(require_role(UserRole.HR))])
+@app.get("/{name}/{role}/employees", response_model=EmployeeListResponseSchema, dependencies=[Depends(require_role(UserRole.HR))])
 async def get_all_employees(
     name: str,
     role: str,
+    page: int = 1,
+    page_size: int = 50,
     session: AsyncSession = Depends(get_async_session),
     current_user: UserModel = Depends(get_current_user)
 ):
@@ -251,7 +259,14 @@ async def get_all_employees(
     if not verify_user_access(name, role, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     
-    employees_stmt = select(UserModel).where(UserModel.role == UserRole.EMPLOYEE)
+    # Get total count
+    count_stmt = select(func.count()).select_from(UserModel).where(UserModel.role == UserRole.EMPLOYEE)
+    total_result = await session.execute(count_stmt)
+    total = total_result.scalar()
+    
+    # Get paginated employees
+    offset = (page - 1) * page_size
+    employees_stmt = select(UserModel).where(UserModel.role == UserRole.EMPLOYEE).offset(offset).limit(page_size)
     employees_result = await session.execute(employees_stmt)
     employees = employees_result.scalars().all()
     
@@ -275,10 +290,15 @@ async def get_all_employees(
             "completion_rate": completed / total * 100 if total > 0 else 0
         })
     
-    return {"employees": employee_data}
+    return {
+        "employees": employee_data,
+        "total": total,
+        "page": page,
+        "page_size": page_size
+    }
 
 
-@app.get("/{name}/{role}/manage/{employee_id}", dependencies=[Depends(require_role(UserRole.HR))])
+@app.get("/{name}/{role}/manage/{employee_id}", response_model=EmployeeManageResponseSchema, dependencies=[Depends(require_role(UserRole.HR))])
 async def manage_employee(
     name: str,
     role: str,
@@ -338,7 +358,7 @@ class AssignTaskRequest(BaseModel):
     employee_id: str
     task_id: str
 
-@app.post("/{name}/{role}/assign-task", dependencies=[Depends(require_role(UserRole.HR))])
+@app.post("/{name}/{role}/assign-task", response_model=MessageResponseSchema, dependencies=[Depends(require_role(UserRole.HR))])
 async def assign_task(
     name: str,
     role: str,
@@ -378,6 +398,8 @@ async def assign_task(
 async def get_documents(
     name: str,
     role: str,
+    page: int = 1,
+    page_size: int = 50,
     session: AsyncSession = Depends(get_async_session),
     current_user: UserModel = Depends(get_current_user)
 ):
@@ -386,13 +408,25 @@ async def get_documents(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     
     if role.lower() == "hr":
-        # HR sees all documents
-        docs_stmt = select(DocumentModel)
+        # Get total count for HR
+        count_stmt = select(func.count()).select_from(DocumentModel)
+        total_result = await session.execute(count_stmt)
+        total = total_result.scalar()
+        
+        # HR sees all documents with pagination
+        offset = (page - 1) * page_size
+        docs_stmt = select(DocumentModel).offset(offset).limit(page_size)
         docs_result = await session.execute(docs_stmt)
         documents = docs_result.scalars().all()
     else:
-        # Employee sees only their documents
-        docs_stmt = select(DocumentModel).where(DocumentModel.employee_id == current_user.id)
+        # Get total count for Employee
+        count_stmt = select(func.count()).select_from(DocumentModel).where(DocumentModel.employee_id == current_user.id)
+        total_result = await session.execute(count_stmt)
+        total = total_result.scalar()
+        
+        # Employee sees only their documents with pagination
+        offset = (page - 1) * page_size
+        docs_stmt = select(DocumentModel).where(DocumentModel.employee_id == current_user.id).offset(offset).limit(page_size)
         docs_result = await session.execute(docs_stmt)
         documents = docs_result.scalars().all()
     
@@ -407,7 +441,10 @@ async def get_documents(
                 "uploaded_at": doc.uploaded_at,
                 "verified_at": doc.verified_at
             } for doc in documents
-        ]
+        ],
+        "total": total,
+        "page": page,
+        "page_size": page_size
     }
 
 
@@ -468,6 +505,8 @@ async def upload_document(
 async def get_tasks(
     name: str,
     role: str,
+    page: int = 1,
+    page_size: int = 50,
     session: AsyncSession = Depends(get_async_session),
     current_user: UserModel = Depends(get_current_user)
 ):
@@ -476,8 +515,14 @@ async def get_tasks(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     
     if role.lower() == "hr":
-        # HR sees all tasks
-        tasks_stmt = select(TaskModel)
+        # Get total count
+        count_stmt = select(func.count()).select_from(TaskModel)
+        total_result = await session.execute(count_stmt)
+        total = total_result.scalar()
+        
+        # HR sees all tasks with pagination
+        offset = (page - 1) * page_size
+        tasks_stmt = select(TaskModel).offset(offset).limit(page_size)
         tasks_result = await session.execute(tasks_stmt)
         tasks = tasks_result.scalars().all()
         
@@ -491,11 +536,21 @@ async def get_tasks(
                     "is_active": task.is_active,
                     "created_at": task.created_at
                 } for task in tasks
-            ]
+            ],
+            "total": total,
+            "page": page,
+            "page_size": page_size
         }
     else:
         # Employee sees assigned tasks
-        employee_tasks_stmt = select(EmployeeTaskModel).where(EmployeeTaskModel.employee_id == current_user.id)
+        # Get total count
+        count_stmt = select(func.count()).select_from(EmployeeTaskModel).where(EmployeeTaskModel.employee_id == current_user.id)
+        total_result = await session.execute(count_stmt)
+        total = total_result.scalar()
+        
+        # Get paginated tasks
+        offset = (page - 1) * page_size
+        employee_tasks_stmt = select(EmployeeTaskModel).where(EmployeeTaskModel.employee_id == current_user.id).offset(offset).limit(page_size)
         employee_tasks_result = await session.execute(employee_tasks_stmt)
         employee_tasks = employee_tasks_result.scalars().all()
         
@@ -515,13 +570,18 @@ async def get_tasks(
                     "completed_at": emp_task.completed_at
                 })
         
-        return {"tasks": task_data}
+        return {
+            "tasks": task_data,
+            "total": total,
+            "page": page,
+            "page_size": page_size
+        }
 
 
 class CompleteTaskRequest(BaseModel):
     assignment_id: str
 
-@app.post("/{name}/{role}/tasks/complete")
+@app.post("/{name}/{role}/tasks/complete", response_model=MessageResponseSchema)
 async def complete_task(
     name: str,
     role: str,
@@ -552,6 +612,8 @@ async def complete_task(
 async def get_training_modules(
     name: str,
     role: str,
+    page: int = 1,
+    page_size: int = 50,
     session: AsyncSession = Depends(get_async_session),
     current_user: UserModel = Depends(get_current_user)
 ):
@@ -559,7 +621,14 @@ async def get_training_modules(
     if not verify_user_access(name, role, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     
-    modules_stmt = select(TrainingModuleModel).where(TrainingModuleModel.is_active)
+    # Get total count
+    count_stmt = select(func.count()).select_from(TrainingModuleModel).where(TrainingModuleModel.is_active)
+    total_result = await session.execute(count_stmt)
+    total = total_result.scalar()
+    
+    # Get paginated modules
+    offset = (page - 1) * page_size
+    modules_stmt = select(TrainingModuleModel).where(TrainingModuleModel.is_active).offset(offset).limit(page_size)
     modules_result = await session.execute(modules_stmt)
     modules = modules_result.scalars().all()
     
@@ -588,7 +657,12 @@ async def get_training_modules(
                 }
             })
         
-        return {"training_modules": progress_data}
+        return {
+            "training_modules": progress_data,
+            "total": total,
+            "page": page,
+            "page_size": page_size
+        }
     
     else:
         # HR sees all modules
@@ -603,7 +677,10 @@ async def get_training_modules(
                     "is_mandatory": module.is_mandatory,
                     "created_at": module.created_at
                 } for module in modules
-            ]
+            ],
+            "total": total,
+            "page": page,
+            "page_size": page_size
         }
 
 

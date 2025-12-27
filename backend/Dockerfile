@@ -9,18 +9,17 @@ WORKDIR /app
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
+    PIP_NO_CACHE_DIR=off \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install build dependencies
+# Install build dependencies in a single layer
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
-    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install Python dependencies
 COPY requirements.txt .
-RUN pip install --user --no-cache-dir -r requirements.txt
+RUN pip install --user -r requirements.txt
 
 # Stage 2: Runtime stage
 FROM python:3.11-slim
@@ -33,13 +32,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH=/root/.local/bin:$PATH
 
-# Install only runtime dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    postgresql-client \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
-
-# Copy Python packages from builder
+# Copy Python packages from builder (no apt-get needed)
 COPY --from=builder /root/.local /root/.local
 
 # Copy application code
