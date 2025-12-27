@@ -189,3 +189,37 @@ class AssignTaskResponseSchema(BaseModel):
     """Task assignment response"""
     message: str
     assignment_id: Optional[str] = None
+
+
+# Performance Schemas
+class EmployeePerformanceSchema(BaseModel):
+    """Individual employee performance metrics"""
+    employee_id: str
+    employee_name: str
+    total_tasks: int
+    completed_tasks: int
+    pending_tasks: int
+    completion_rate: float
+    total_training: int
+    completed_training: int
+    training_completion_rate: float
+    avg_task_completion_days: Optional[float] = None
+
+
+class OverallPerformanceSchema(BaseModel):
+    """Overall system performance metrics"""
+    total_employees: int
+    active_employees: int
+    total_tasks_assigned: int
+    total_tasks_completed: int
+    overall_task_completion_rate: float
+    total_training_modules: int
+    avg_training_completion: float
+    pending_documents: int
+
+
+# Training Update Schema
+class TrainingProgressUpdateSchema(BaseModel):
+    """Update training progress"""
+    progress_percentage: int
+    status: Optional[str] = None

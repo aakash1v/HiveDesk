@@ -21,13 +21,15 @@ from .models import (
 )
 from .schemas import (
     UserCreateSchema, UserResponseSchema, UserLoginSchema, UserLoginResponseSchema,
+    UserUpdateSchema, TaskCreateSchema, TaskUpdateSchema, TaskResponseSchema,
     DocumentUploadResponseSchema,
     DashboardHRResponseSchema, DashboardEmployeeResponseSchema,
     EmployeeListResponseSchema, EmployeeManageResponseSchema,
     TaskListResponseSchema, HRTaskListResponseSchema,
     DocumentListResponseSchema, TrainingListResponseSchema,
     HRTrainingListResponseSchema, MessageResponseSchema,
-    AssignTaskResponseSchema
+    AssignTaskResponseSchema, EmployeePerformanceSchema,
+    OverallPerformanceSchema, TrainingProgressUpdateSchema
 )
 from .core.enums import UserRole, TaskStatus, VerificationStatus, DocumentType
 from .auth import (
@@ -194,6 +196,30 @@ async def register_user(
     return UserResponseSchema.from_orm(db_user)
 
 
+@app.post("/auth/logout", response_model=MessageResponseSchema)
+async def logout(
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Logout endpoint - client should discard token"""
+    return {"message": "Logged out successfully"}
+
+
+@app.get("/auth/me", response_model=UserResponseSchema)
+async def get_current_user_info(
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Get current authenticated user information"""
+    return UserResponseSchema.from_orm(current_user)
+
+
+@app.get("/auth/verify", response_model=MessageResponseSchema)
+async def verify_token(
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Verify if token is valid"""
+    return {"message": "Token is valid"}
+
+
 # Dashboard endpoints
 @app.get("/{name}/{role}/dashboard")
 async def get_dashboard(
@@ -352,6 +378,90 @@ async def manage_employee(
             } for doc in documents
         ]
     }
+
+
+@app.put("/{name}/{role}/employees/{employee_id}", response_model=UserResponseSchema, dependencies=[Depends(require_role(UserRole.HR))])
+async def update_employee(
+    name: str,
+    role: str,
+    employee_id: str,
+    update_data: UserUpdateSchema,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Update employee information (HR only)"""
+    if not verify_user_access(name, role, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    
+    # Find employee
+    employee = await session.get(UserModel, employee_id)
+    if not employee or employee.role != UserRole.EMPLOYEE:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    
+    # Update fields
+    if update_data.name is not None:
+        employee.name = update_data.name
+    if update_data.email is not None:
+        # Check email uniqueness
+        email_stmt = select(UserModel).where(UserModel.email == update_data.email, UserModel.id != employee_id)
+        email_result = await session.execute(email_stmt)
+        if email_result.scalar_one_or_none():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already in use")
+        employee.email = update_data.email
+    if update_data.is_active is not None:
+        employee.is_active = update_data.is_active
+    
+    employee.updated_at = datetime.utcnow()
+    await session.commit()
+    await session.refresh(employee)
+    
+    return UserResponseSchema.from_orm(employee)
+
+
+@app.delete("/{name}/{role}/employees/{employee_id}", response_model=MessageResponseSchema, dependencies=[Depends(require_role(UserRole.HR))])
+async def delete_employee(
+    name: str,
+    role: str,
+    employee_id: str,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Delete employee (HR only)"""
+    if not verify_user_access(name, role, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    
+    # Find employee
+    employee = await session.get(UserModel, employee_id)
+    if not employee or employee.role != UserRole.EMPLOYEE:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    
+    # Delete related records first (cascade)
+    # Delete employee tasks
+    tasks_stmt = select(EmployeeTaskModel).where(EmployeeTaskModel.employee_id == employee_id)
+    tasks_result = await session.execute(tasks_stmt)
+    tasks = tasks_result.scalars().all()
+    for task in tasks:
+        await session.delete(task)
+    
+    # Delete employee documents
+    docs_stmt = select(DocumentModel).where(DocumentModel.employee_id == employee_id)
+    docs_result = await session.execute(docs_stmt)
+    documents = docs_result.scalars().all()
+    for doc in documents:
+        await session.delete(doc)
+    
+    # Delete employee training
+    training_stmt = select(EmployeeTrainingModel).where(EmployeeTrainingModel.employee_id == employee_id)
+    training_result = await session.execute(training_stmt)
+    trainings = training_result.scalars().all()
+    for training in trainings:
+        await session.delete(training)
+    
+    # Delete employee
+    await session.delete(employee)
+    await session.commit()
+    
+    return {"message": "Employee deleted successfully"}
 
 
 class AssignTaskRequest(BaseModel):
@@ -578,6 +688,102 @@ async def get_tasks(
         }
 
 
+@app.post("/{name}/{role}/tasks", response_model=TaskResponseSchema, dependencies=[Depends(require_role(UserRole.HR))])
+async def create_task(
+    name: str,
+    role: str,
+    task_data: TaskCreateSchema,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Create new task (HR only)"""
+    if not verify_user_access(name, role, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    
+    # Create task
+    new_task = TaskModel(
+        title=task_data.title,
+        description=task_data.description,
+        task_type=task_data.task_type,
+        content=task_data.content,
+        required_document_type=task_data.required_document_type,
+        is_active=task_data.is_active,
+        created_by=current_user.id
+    )
+    
+    session.add(new_task)
+    await session.commit()
+    await session.refresh(new_task)
+    
+    return TaskResponseSchema.from_orm(new_task)
+
+
+@app.put("/{name}/{role}/tasks/{task_id}", response_model=TaskResponseSchema, dependencies=[Depends(require_role(UserRole.HR))])
+async def update_task(
+    name: str,
+    role: str,
+    task_id: str,
+    update_data: TaskUpdateSchema,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Update task (HR only)"""
+    if not verify_user_access(name, role, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    
+    # Find task
+    task = await session.get(TaskModel, task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    
+    # Update fields
+    if update_data.title is not None:
+        task.title = update_data.title
+    if update_data.description is not None:
+        task.description = update_data.description
+    if update_data.content is not None:
+        task.content = update_data.content
+    if update_data.is_active is not None:
+        task.is_active = update_data.is_active
+    
+    task.updated_at = datetime.utcnow()
+    await session.commit()
+    await session.refresh(task)
+    
+    return TaskResponseSchema.from_orm(task)
+
+
+@app.delete("/{name}/{role}/tasks/{task_id}", response_model=MessageResponseSchema, dependencies=[Depends(require_role(UserRole.HR))])
+async def delete_task(
+    name: str,
+    role: str,
+    task_id: str,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Delete task (HR only)"""
+    if not verify_user_access(name, role, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    
+    # Find task
+    task = await session.get(TaskModel, task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    
+    # Delete task assignments first
+    assignments_stmt = select(EmployeeTaskModel).where(EmployeeTaskModel.task_id == task_id)
+    assignments_result = await session.execute(assignments_stmt)
+    assignments = assignments_result.scalars().all()
+    for assignment in assignments:
+        await session.delete(assignment)
+    
+    # Delete task
+    await session.delete(task)
+    await session.commit()
+    
+    return {"message": "Task deleted successfully"}
+
+
 class CompleteTaskRequest(BaseModel):
     assignment_id: str
 
@@ -682,6 +888,189 @@ async def get_training_modules(
             "page": page,
             "page_size": page_size
         }
+
+
+@app.put("/{name}/{role}/training/{training_id}", response_model=MessageResponseSchema)
+async def update_training_progress(
+    name: str,
+    role: str,
+    training_id: str,
+    progress_data: TrainingProgressUpdateSchema,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Update training progress"""
+    if not verify_user_access(name, role, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    
+    # For employees, find or create training record
+    progress_stmt = select(EmployeeTrainingModel).where(
+        EmployeeTrainingModel.employee_id == current_user.id,
+        EmployeeTrainingModel.training_module_id == training_id
+    )
+    progress_result = await session.execute(progress_stmt)
+    progress = progress_result.scalar_one_or_none()
+    
+    if not progress:
+        # Create new progress record
+        initial_status = TaskStatus.COMPLETED if progress_data.progress_percentage >= 100 else TaskStatus.PENDING
+        progress = EmployeeTrainingModel(
+            employee_id=current_user.id,
+            training_module_id=training_id,
+            progress_percentage=progress_data.progress_percentage,
+            status=initial_status,
+            started_at=datetime.utcnow()
+        )
+        if progress_data.progress_percentage >= 100:
+            progress.completed_at = datetime.utcnow()
+        session.add(progress)
+    else:
+        # Update existing record
+        progress.progress_percentage = progress_data.progress_percentage
+        
+        # Mark as completed if 100%
+        if progress_data.progress_percentage >= 100:
+            progress.status = TaskStatus.COMPLETED
+            progress.completed_at = datetime.utcnow()
+        else:
+            progress.status = TaskStatus.PENDING
+    
+    await session.commit()
+    return {"message": "Training progress updated successfully"}
+
+
+@app.get("/{name}/{role}/performance", response_model=OverallPerformanceSchema, dependencies=[Depends(require_role(UserRole.HR))])
+async def get_overall_performance(
+    name: str,
+    role: str,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Get overall performance statistics (HR only)"""
+    if not verify_user_access(name, role, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    
+    # Total employees
+    total_emp_stmt = select(func.count()).select_from(UserModel).where(UserModel.role == UserRole.EMPLOYEE)
+    total_emp_result = await session.execute(total_emp_stmt)
+    total_employees = total_emp_result.scalar()
+    
+    # Active employees
+    active_emp_stmt = select(func.count()).select_from(UserModel).where(
+        UserModel.role == UserRole.EMPLOYEE,
+        UserModel.is_active == True
+    )
+    active_emp_result = await session.execute(active_emp_stmt)
+    active_employees = active_emp_result.scalar()
+    
+    # Total tasks assigned
+    total_tasks_stmt = select(func.count()).select_from(EmployeeTaskModel)
+    total_tasks_result = await session.execute(total_tasks_stmt)
+    total_tasks_assigned = total_tasks_result.scalar()
+    
+    # Total tasks completed
+    completed_tasks_stmt = select(func.count()).select_from(EmployeeTaskModel).where(
+        EmployeeTaskModel.status == TaskStatus.COMPLETED
+    )
+    completed_tasks_result = await session.execute(completed_tasks_stmt)
+    total_tasks_completed = completed_tasks_result.scalar()
+    
+    # Overall task completion rate
+    overall_task_completion_rate = (total_tasks_completed / total_tasks_assigned * 100) if total_tasks_assigned > 0 else 0
+    
+    # Total training modules
+    total_training_stmt = select(func.count()).select_from(TrainingModuleModel).where(TrainingModuleModel.is_active == True)
+    total_training_result = await session.execute(total_training_stmt)
+    total_training_modules = total_training_result.scalar()
+    
+    # Average training completion
+    completed_training_stmt = select(func.count()).select_from(EmployeeTrainingModel).where(
+        EmployeeTrainingModel.status == TaskStatus.COMPLETED
+    )
+    completed_training_result = await session.execute(completed_training_stmt)
+    completed_training_count = completed_training_result.scalar()
+    
+    total_training_assignments_stmt = select(func.count()).select_from(EmployeeTrainingModel)
+    total_training_assignments_result = await session.execute(total_training_assignments_stmt)
+    total_training_assignments = total_training_assignments_result.scalar()
+    
+    avg_training_completion = (completed_training_count / total_training_assignments * 100) if total_training_assignments > 0 else 0
+    
+    # Pending documents
+    pending_docs_stmt = select(func.count()).select_from(DocumentModel).where(
+        DocumentModel.verification_status == VerificationStatus.PENDING
+    )
+    pending_docs_result = await session.execute(pending_docs_stmt)
+    pending_documents = pending_docs_result.scalar()
+    
+    return OverallPerformanceSchema(
+        total_employees=total_employees,
+        active_employees=active_employees,
+        total_tasks_assigned=total_tasks_assigned,
+        total_tasks_completed=total_tasks_completed,
+        overall_task_completion_rate=overall_task_completion_rate,
+        total_training_modules=total_training_modules,
+        avg_training_completion=avg_training_completion,
+        pending_documents=pending_documents
+    )
+
+
+@app.get("/{name}/{role}/performance/{employee_id}", response_model=EmployeePerformanceSchema, dependencies=[Depends(require_role(UserRole.HR))])
+async def get_employee_performance(
+    name: str,
+    role: str,
+    employee_id: str,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: UserModel = Depends(get_current_user)
+):
+    """Get individual employee performance (HR only)"""
+    if not verify_user_access(name, role, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    
+    # Get employee
+    employee = await session.get(UserModel, employee_id)
+    if not employee or employee.role != UserRole.EMPLOYEE:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    
+    # Get task statistics
+    tasks_stmt = select(EmployeeTaskModel).where(EmployeeTaskModel.employee_id == employee_id)
+    tasks_result = await session.execute(tasks_stmt)
+    tasks = tasks_result.scalars().all()
+    
+    total_tasks = len(tasks)
+    completed_tasks = len([t for t in tasks if t.status == TaskStatus.COMPLETED])
+    pending_tasks = total_tasks - completed_tasks
+    completion_rate = (completed_tasks / total_tasks * 100) if total_tasks > 0 else 0
+    
+    # Calculate average task completion time
+    completed_with_dates = [t for t in tasks if t.status == TaskStatus.COMPLETED and t.completed_at and t.assigned_at]
+    if completed_with_dates:
+        total_days = sum([(t.completed_at - t.assigned_at).days for t in completed_with_dates])
+        avg_task_completion_days = total_days / len(completed_with_dates)
+    else:
+        avg_task_completion_days = None
+    
+    # Get training statistics
+    training_stmt = select(EmployeeTrainingModel).where(EmployeeTrainingModel.employee_id == employee_id)
+    training_result = await session.execute(training_stmt)
+    trainings = training_result.scalars().all()
+    
+    total_training = len(trainings)
+    completed_training = len([t for t in trainings if t.status == TaskStatus.COMPLETED])
+    training_completion_rate = (completed_training / total_training * 100) if total_training > 0 else 0
+    
+    return EmployeePerformanceSchema(
+        employee_id=employee.id,
+        employee_name=employee.name,
+        total_tasks=total_tasks,
+        completed_tasks=completed_tasks,
+        pending_tasks=pending_tasks,
+        completion_rate=completion_rate,
+        total_training=total_training,
+        completed_training=completed_training,
+        training_completion_rate=training_completion_rate,
+        avg_task_completion_days=avg_task_completion_days
+    )
 
 
 if __name__ == "__main__":

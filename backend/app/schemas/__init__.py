@@ -38,7 +38,10 @@ from .responses import (
     TrainingListResponseSchema,
     HRTrainingListResponseSchema,
     MessageResponseSchema,
-    AssignTaskResponseSchema
+    AssignTaskResponseSchema,
+    EmployeePerformanceSchema,
+    OverallPerformanceSchema,
+    TrainingProgressUpdateSchema
 )
 from .training import (
     TrainingModuleBaseSchema,
